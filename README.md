@@ -1,7 +1,7 @@
 # Time_Series_Analysis
 
 Introduction
-Time series analysis on Shanghai License Plate Bidding Price
+- Time series analysis on Shanghai License Plate Bidding Price
 
 Time Series Models:
 1. ETS & Exponential Smoothing
