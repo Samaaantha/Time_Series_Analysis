@@ -1,0 +1,564 @@
+---
+title: "final project (Thursday 5/26 1)"
+output: html_notebook
+---
+# ShangHai Car License Plate Analysis
+
+Library
+```{r,warning=FALSE,message=FALSE}
+library(TSA)
+library(fpp)
+library(forecast)
+library(ggplot2)
+library(TSstudio)
+library(car)
+library("readxl")
+library(lubridate)
+library(zoo)
+library(vars)
+library(xts)
+```
+# 1 Load dataset
+```{r}
+SH <- read.csv("C:/Users/tutu2/Downloads/license_plates_acution_data.csv")
+SH$Date <- as.character.Date(SH$Date)
+SH <- SH[,-1]
+head(SH,4)
+tail(SH,4)
+```
+# 2 Data Exploration
+# 2.1 Missing Value Compensation
+2008 feburary no data because Feb bidding merged to Jan that year. 
+```{r}
+row_before_missing = 73
+SH <- rbind(SH[1:row_before_missing,], c(2008.02, NA, NA, NA, NA), SH[-(1:row_before_missing),])
+```
+The previous R code messed up the row names of our data frame. We may modify the row names of our new data to range from 1 to the number of rows of our data
+We've added a row here to fill in the gaps for February.Data at (2018, 2) is missing because Feb bidding was merged to Jan that year performing an naive imputation by imputing the missing value with janurary’s value for price and half of the value for number of bidders.
+```{r}
+rownames(SH) <- 1:nrow(SH)
+SH$avg_deal_price[74] <- SH$avg_deal_price[73]
+
+SH$lowest_deal_price[74] <- SH$lowest_deal_price[73]
+
+SH$num_bidder[74] <- round(SH$num_bidder[73] / 2)
+SH$num_bidder[73] <- round(SH$num_bidder[73] / 2)
+
+SH$num_plates[74] <- SH$num_plates[73] / 2
+SH$num_plates[73] <- SH$num_plates[73] / 2
+
+SH[c(73,74),]
+```
+# 2.2 convert prices'variables to time series by month 
+```{r}
+
+sh_m_avg <- ts(SH$avg_deal_price,start = c(2002,1), frequency = 12)
+sh_m_low <- ts(SH$lowest_deal_price,start = c(2002,1), frequency = 12)
+```
+
+```{r}
+plot(sh_m_avg, main = "Shanghai License average price from 2002.1-2017.10")  #better choice: 2010 price supply surplus 
+plot(sh_m_low, main = "Shanghai License lowest price from 2002.1-2017.10")
+```
+# 2.3 convert numbers of bidder, numbers of plate and the ratio of successful cases into time series by month
+```{r}
+sh_m_bidder <- ts(SH$num_bidder,start = c(2002,1), frequency = 12) 
+sh_m_plate <- ts(SH$num_plates,start = c(2002,1), frequency = 12)
+competitiveness <- ts(sh_m_bidder/sh_m_plate,start = c(2002,1), frequency = 12)
+```
+
+```{r}
+plot(sh_m_bidder, main = "numnber of bidders from 2002.1-2017.10") 
+plot(sh_m_plate, main = "number of plates from 2002.1-2017.10") # 2008.01 new policy to prevent price inceasing imbalance #increasing trend; variance inconsistancy 
+plot(competitiveness, main = "rate of success bids from 2002.1-2017.10") 
+```
+We can tell from the plot of success cases that it has a sudden drop from year 2014.
+
+# 2.4 train and test split
+```{r}
+train = window(sh_m_avg, end = c(2016, 12))
+test = window(sh_m_avg, start = c(2017, 1))
+competitiveness_train = window(competitiveness, end = c(2016, 12))
+```
+```{r}
+tsdisplay(train)
+```
+# 2.5 Data description：test normality 
+since p-value = 1.919e-09, which is less than 0.05,the data is normally distributed.
+```{r}
+shapiro.test(sh_m_avg)
+```
+# 2.6 KPSS Test
+KPSS:The p-value is 0.01, which is less than 0.05, we can reject the null hypothesis of the KPSS test. Then we can assume that the time series is not stationary. 
+```{r,warning=FALSE,message=FALSE}
+library(tseries)
+kpss.test(train)
+```
+# 2.7 ADF Test
+KPSS:The p-value is 0.6411, which is larger than 0.05, we can reject the null hypothesis of the ADF test. Then we can assume that the time series is not stationary. 
+```{r}
+adf.test(train)
+```
+
+# 2.8 test the correlation of number of bidder against price and number of plate against price 
+Since both of the correlation coefficient values are less than +0.8, they are not considered significant.
+```{r}
+cor.test(sh_m_bidder,sh_m_avg)
+cor.test(sh_m_plate,sh_m_avg)
+```
+# 2.9 still test on BoxCox Transformation: variance
+No change here
+```{r}
+lambda <- BoxCox.lambda(train) 
+ride_bc <- BoxCox(train, lambda = lambda) 
+autoplot(ride_bc)
+```
+# 2.10 Differencing
+```{r}
+train_transformed = diff(train)
+```
+
+# 3 Exponential Models
+# 3.1 ETS
+ANN -> simple exponential smoothing with additive errors -> conform with KPSS/SDF test -> random walk 
+for the ETS(A,N,N) model, the traditional parameter region is 0<α<1
+so we need to use SES
+```{r}
+ets(train)
+```
+```{r}
+model1.pred <- forecast(train,h=10)
+plot(model1.pred)
+```
+# 3.2 Multilinear regression model
+choose average price as target variable. Creating a Multilinear regression model
+In order to tackle the trend of our time series, a linear regression model is used. 
+I check the correlation of average price between num_plates and num_bidder first.
+The following plot shows the model below:
+AveragePrice=β0+β1∗num_bidder+β2∗num_plates+ϵ,where ϵn is an ARMA process.
+```{r}
+model1 <- lm(sh_m_avg ~ sh_m_plate+ sh_m_bidder,data = train)
+summary(model1)
+```
+produce added variable plots
+```{r}
+plot(model1)
+avPlots(model1)
+```
+
+```{r}
+prediction <- predict(model1, newdata = test)
+```
+
+```{r}
+plot(prediction)
+```
+
+```{r}
+model1.pred <- forecast(train,h=10)
+plot(model1.pred)
+```
+# check residuals
+# Ljung-Box test:  p-value = 2.2e-16 < 0.05. So we reject Null hypothesis and the residuals are not independent, which means that there is serial correlation in the residuals 
+```{r}
+checkresiduals(model1)
+```
+# check normality 
+p-value = 0.2658 < 0.05. So we accept Null hypothesis and the residuals are normally distributed. Assumption is valid and model inference (confidence intervals, model predictions) should also be valid.
+```{r}
+shapiro.test(model1$residuals)
+```
+
+# kpss.test for residual 
+p-value = 0.2658 => non stationary
+```{r}
+shapiro.test(model1$residuals)
+```
+# 3.3 Simple exponential smoothing
+```{r}
+fit_mult <- decompose(train, type="multiplicative")
+plot(fit_mult)
+```
+```{r}
+fit_mult$seasonal
+```
+# Fit Exponential smoothing forecasts
+# Decompostition: Decomposing Non-Seasonal Data
+Seasonal variations are not constant through the series, the fluctuation's amplitude actually change. So it should be multiplicative.
+
+Level + Trend + Seasonality 
+hw(y, h = 2 * frequency(x), seasonal = c(“additive”, “multiplicative”), damped = FALSE, level = c(80, 95), fan = FALSE, initial = c(“optimal”, “simple”), exponential = FALSE, alpha = NULL, beta = NULL, gamma = NULL, phi = NULL, lambda = NULL, biasadj = FALSE, x = y, …)
+
+every observation is a function of previous forcast error 
+```{r}
+fc_ses <- ses(train, h=10)
+
+summary(fc_ses)
+
+```
+```{r}
+autoplot(fc_ses) +
+  autolayer(fitted(fc_ses), series="Fitted") +
+  ylab("Shanghai License Average price)") + xlab("Year")
+```
+# check residual
+Ljung-Box test:  p-value = 0.6623 > 0.05. So we accept Null hypothesis and the residuals are independent, which means that there is no serial correlation in the residuals 
+```{r}
+checkresiduals(fc_ses)
+```
+# Test normality for residual of model 2
+p-value = 2.2e-16 < 0.05. So we reject Null hypothesis and the residuals are not normally distributed
+```{r}
+shapiro.test(fc_ses$residuals)
+```
+# forecast graph
+```{r}
+model2.pred <-forecast(fc_ses, newdata = test)
+model2.pred
+plot(model2.pred)
+```
+
+# 3.4 SEASONAL ARIMA： ARIMA(0,1,3) with drift
+```{r}
+arima <- auto.arima(train,seasonal=T,lambda = "auto")
+summary(arima)
+```
+
+without lambda, we get a higher AICC -> better performance model becuase our variance's changing rate is non-constant, neither consistantly increase or decrease by time. 
+```{r}
+arima1 <- auto.arima(train,seasonal=T)
+summary(arima1)
+```
+
+```{r}
+forecast_arima <- forecast(arima1, h=10)
+autoplot(forecast_arima)
+```
+
+# check residual
+Ljung-Box test:  p-value = p-value = 0.9961 > 0.05, so we accept the Null hypothesis. The residuals are independent and are regarded as white noise, no serial correlation in the residuals. 
+```{r}
+checkresiduals(arima1)
+```
+# check normality 
+# p-value = 2.2e-16 < 0.05. So we reject Null hypothesis and the residuals are not normally distributed
+```{r}
+shapiro.test(arima1$residuals)
+```
+
+# 3.5 XREG
+```{r}
+model_XREG <- auto.arima(train, stepwise = TRUE, approximation =FALSE, xreg =log(competitiveness_train))
+summary(model_XREG)
+```
+# check residual
+```{r}
+checkresiduals(model_XREG)
+```
+# Normality Test
+```{r}
+shapiro.test(model_XREG$residuals) 
+```
+
+```{r}
+qqnorm(model_XREG$residuals,main=expression(Normal~~Q-Q~~Plot))
+qqline(model_XREG$residuals)
+```
+# forecast
+```{r}
+competitiveness_arima = auto.arima(competitiveness_train, lambda = 'auto')
+competitiveness_arima_forecast <-forecast(competitiveness_arima, h = 10)
+Model_Arima_xreg_forecast <-forecast(model_XREG, xreg = log(competitiveness_arima_forecast$mean), h = 10)
+```
+
+
+```{r}
+
+summary(Model_Arima_xreg_forecast)
+
+```
+
+```{r}
+autoplot(Model_Arima_xreg_forecast) +
+  autolayer(Model_Arima_xreg_forecast, series="ARIMA_Xreg")+
+  ggtitle("Forecasts for Monthly Average Bid Price") +
+  xlab("Year") + ylab("CNY")
+```
+
+
+# 3.6 Var model 
+```{r,warning=FALSE,message=FALSE}
+library(vars)
+```
+
+# The R output shows the lag length selected by each of the information criteria available in the vars package. There is a large discrepancy between the VAR(2) selected by the AIC and the VAR(2) selected by the BIC. This is not unusual. As a result we fit a VAR(2).
+
+```{r}
+competitiveness_train_transformed = diff(BoxCox(competitiveness_train, lambda = BoxCox.lambda(competitiveness_train)))
+plot(competitiveness_train_transformed)
+kpss.test(competitiveness_train_transformed)
+adf.test(competitiveness_train_transformed)
+```
+
+```{r}
+var_select = VARselect(cbind(train_transformed, competitiveness_train_transformed))
+var_select
+```
+
+```{r}
+model_var <- VAR(cbind(train_transformed, competitiveness_train_transformed), p = 2, type = "both",ic = c("AIC", "HQ", "SC", "FPE"))
+summary(model_var)
+```
+
+```{r}
+forecast_var <- forecast(model_var,h = 10)
+plot(forecast_var, xlab='Year')
+```
+# check residuals
+```{r}
+plot(forecast_var$forecast[1]$train_transformed$residuals)
+```
+# check residual normality
+p-value = 5.712e-14 < 0.05. So we reject Null hypothesis and the residuals are not normally distributed
+```{r}
+shapiro.test(forecast_var$forecast[1]$train$residuals)
+```
+# kpss test for residuals
+p-value = 0.1, which means the residuals is stationary 
+```{r}
+kpss.test(forecast_var$forecast[1]$train$residuals)
+```
+
+# 4 Model Selection
+# 4.1 Cross validation
+# 4.1.1 CV funtion
+```{r}
+# forecast_f takes in a function lambda (x, h) : forecast(model(x, my_configuration), h=h)
+custom_ts_cv = function(x, forecast_f, h=12, k=48, model='normal', xreg_forecast=NULL, xreg=NULL, sliding=FALSE, x0=NULL){
+  # print("WHY ISN't PRINT STATEMENT WORKING")
+  n <- length(x)
+  se <- matrix(NA,n-k,h)
+  st <- tsp(x)[1]+(k-2)/12
+  # print('tsp working SO FAR')
+  for(i in 1:(n-k)){
+    xreg_short = NULL
+    if (sliding) {
+      xshort <- window(x, start = st+(i-k+1)/12, end=st + i/12)
+      if (model == 'xreg'){
+        xreg_short = window(xreg, start = st+(i-k+1)/12, end=st + i/12)
+      }
+    }
+    else {
+      xshort <- window(x, end=st + i/12)
+      if (model == 'xreg') {
+        xreg_short = window(xreg, end=st + i/12)
+      }
+    }
+    xnext <- window(x, start=st + (i+1)/12, end=st + (i+h)/12)
+    # print(head(xshort))
+    # initialize forecast object
+    fcast1 = NULL
+    # assume diff order =1
+    if (model == 'var') {
+      # print('detecting vectorized model')
+      # print(head(xshort,1))
+      price_for_window = x0 + cumsum(xshort)
+      fcast1 <- forecast_f(xshort, h=h)
+      # print(fcast1)
+      prediction = fcast1$forecast$train_transformed$mean
+      # print('predicted diff')
+      # print(length(prediction))
+      prediction = tail(price_for_window, n=1)[1]+ cumsum(prediction)
+      # print('transformed back')
+      # print(head(prediction,2))
+      # print(length(prediction))
+      # print(c(i, length(prediction), length(xnext[,1])))
+      # print(prediction)
+      # print(xnext[,1])
+      y = xnext[,1]
+      if (length(y) < 12){
+        return(se)
+      }
+      price_for_next_window = tail(price_for_window, n=1)[1] + cumsum(y)
+      error = (prediction-price_for_next_window)^2
+    }
+    if (model == 'xreg') {
+      x_reg_fcast = xreg_forecast(xreg_short, h=h)
+      fcast1 = forecast_f(xshort, h=h, xreg=xreg_short, future_xreg = x_reg_fcast$mean)
+      prediction = fcast1$mean
+    }
+    else {
+      fcast1 <- forecast_f(xshort, h=h)
+      prediction = fcast1$mean
+      
+    }
+    # print('HUHHHH>??>????')
+    # print('printings finished')
+    if (model == 'var'){
+      se[i,1:length(xnext[,1])]=error
+      # print('assigning finished')
+    }
+    else {
+      se[i,1:length(xnext)] <- (prediction-xnext)^2
+    }
+    
+  }
+  return(se)
+}
+```
+# 4.1.2 CV train and test split
+```{r}
+nb_train = window(sh_m_bidder, end = c(2016, 12))
+np_train = window(sh_m_plate, end = c(2016, 12))
+holdout = test
+nb_holdout = window(sh_m_bidder, start = c(2017, 1))
+np_holdout = window(sh_m_plate, start = c(2017, 1))
+```
+# 4.2 Predictive performance (expanding windows)
+# 4.2.1 Arima
+```{r}
+arima_forecast_f = function(x, h){forecast(Arima(x, order=c(0, 1, 3)), h=h)}
+arima_cv = custom_ts_cv(train, arima_forecast_f, h=12)
+arima_rmse_per_h = sqrt(colMeans(arima_cv, na.rm=TRUE))
+arima_rmse_per_h
+```
+# 4.2.2 Arima with Xreg
+```{r}
+xreg_forecast_f = function(x, h){forecast(Arima(x, order=c(0, 1, 1), seasonal=c(1, 0, 0), lambda = 0), h=h)}
+arimax_forecast_f = function(x, h, xreg, future_xreg){forecast(Arima(x, order=c(0, 1, 3), xreg=xreg), h=h, xreg=future_xreg)}
+arimax_cv = custom_ts_cv(train, arimax_forecast_f, model='xreg' , xreg_forecast = xreg_forecast_f, 
+             xreg = log(competitiveness_train))
+arimax_rmse_per_h = sqrt(colMeans(arimax_cv, na.rm=TRUE))
+arimax_rmse_per_h
+```
+# 4.2.3 ETS ANN
+```{r}
+ses_forecast_f = function(x, h){forecast(ets(x,model='ANN'),h=h)}
+ses_cv = custom_ts_cv(train,ses_forecast_f)
+ses_rmse_per_h = sqrt(colMeans(ses_cv, na.rm=TRUE))
+ses_rmse_per_h
+```
+# 4.2.4 VAR
+```{r}
+var_forecast_f = function(x, h){forecast(VAR(x, p = 2, type='const'), h=h)}
+var_cv = custom_ts_cv(cbind(train_transformed, competitiveness_train_transformed),var_forecast_f, model='var', x0=train[1])
+var_rmse_per_h = sqrt(colMeans(var_cv, na.rm=TRUE))
+var_rmse_per_h
+```
+# 4.2.5 Plot CV Performances
+```{r}
+var_forecast_f = function(x, h){forecast(VAR(x, p = 2, type='const'), h=h)}
+var_cv = custom_ts_cv(cbind(train_transformed, competitiveness_train_transformed),var_forecast_f, model='var', x0=train[1])
+var_rmse_per_h = sqrt(colMeans(var_cv, na.rm=TRUE))
+var_rmse_per_h
+```
+```{r}
+performances = list(var=var_rmse_per_h, 
+     arima=arima_rmse_per_h,
+     arimax=arimax_rmse_per_h,
+     ses=ses_rmse_per_h
+     )
+plot(arima_rmse_per_h, type='l', ylab='rmse', main = 'CV performance for each model')
+lines(arimax_rmse_per_h, col='red')
+lines(ses_rmse_per_h, col='orange')
+lines(var_rmse_per_h, col='blue')
+legend('topleft', legend=c("arima", "arimax", "exponential smoothing", "VAR"), 
+       lty = c(1, 1, 1, 1),
+       col=c('black', 'red', 'orange', 'blue'))
+```
+# 4.3 Predictive performance (sliding window)
+
+```{r}
+arima_cv = custom_ts_cv(train, arima_forecast_f, h=12, sliding = TRUE)
+arima_rmse_per_h = sqrt(colMeans(arima_cv, na.rm=TRUE))
+arima_rmse_per_h
+
+
+arimax_cv = custom_ts_cv(train, arimax_forecast_f, model='xreg' , xreg_forecast = xreg_forecast_f, 
+             xreg = log(competitiveness_train), sliding = TRUE)
+arimax_rmse_per_h = sqrt(colMeans(arimax_cv, na.rm=TRUE))
+arimax_rmse_per_h
+
+ses_cv = custom_ts_cv(train,ses_forecast_f, sliding = TRUE)
+ses_rmse_per_h = sqrt(colMeans(ses_cv, na.rm=TRUE))
+ses_rmse_per_h
+
+var_cv = custom_ts_cv(cbind(train_transformed, competitiveness_train_transformed),var_forecast_f, model='var', x0=train[1], sliding = TRUE)
+var_rmse_per_h = sqrt(colMeans(var_cv, na.rm=TRUE))
+var_rmse_per_h
+```
+
+
+```{r}
+performances = list(var=var_rmse_per_h, 
+     arima=arima_rmse_per_h,
+     arimax=arimax_rmse_per_h,
+     ses=ses_rmse_per_h
+     )
+plot(arima_rmse_per_h, type='l', ylab='rmse', main = 'CV performance for each model (sliding window)')
+lines(arimax_rmse_per_h, col='red')
+lines(ses_rmse_per_h, col='orange')
+lines(var_rmse_per_h, col='blue')
+legend('topleft', legend=c("arima", "arimax", "exponential smoothing", "VAR"), 
+       lty = c(1, 1, 1, 1),
+       col=c('black', 'red', 'orange', 'blue'))
+```
+Attaching package: 'MLmetrics'
+
+```{r}
+install.packages("Metrics")
+library(Metrics)
+``` 
+
+```{r}
+#exp
+mape <- function(actual,pred){
+           mape <- mean(abs((actual - pred)/actual))
+           return (mape)
+         }
+```
+
+
+```{r}
+#exp
+exp_pred <- fc_ses$mean
+exp_mape <- mape(exp_pred, test)
+exp_rmse <- rmse(exp_pred, test)
+```
+
+```{r}
+#arima
+arima_pred <-forecast_arima$mean
+arima_mape <- mape(arima_pred, test)
+arima_rmse <- rmse(arima_pred, test) 
+```
+
+```{r}
+#arima with xreg
+xreg_pred <- Model_Arima_xreg_forecast$mean
+xreg_mape <- mape(xreg_pred, test)
+xreg_rmse <- rmse(xreg_pred, test) 
+```
+
+```{r} 
+#differencing test 
+test_transformed = diff(test)
+```
+
+```{r}
+#Var
+var_price <- forecast_var$forecast[1]$train$mean
+var_price_mape <- mape(var_price, test_transformed)
+var_price_rmse <- rmse(var_price, test_transformed)
+```
+
+
+```{r} 
+#Draw the dataframe of comparison metrics 
+Model_Name <- c("Exponential Smoothing", "ARIMA", "ARIMA with xreg", "VAR")
+mape <- c(exp_mape,arima_mape,xreg_mape,var_price_mape)
+rmse <- c(exp_rmse, arima_rmse,xreg_rmse,var_price_rmse)
+data1 <- data.frame(Model_Name, mape, rmse)
+data1[with(data1, order(rmse,mape)),]
+```
+
